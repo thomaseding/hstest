@@ -55,7 +55,7 @@ data Aura :: (Type -> Constraint) -> * where
  
 
 data Ability :: Type -> (Type -> Constraint) -> * where
-    Aura :: (k a) => (Handle a k -> Aura k) -> Ability a k
+    Aura :: (Handle a k -> Aura k) -> Ability a k
 
 data MinionCard (k :: Type -> Constraint) = MinionCard {
     _minionAbilities :: [Ability 'Minion k]
