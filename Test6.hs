@@ -26,42 +26,36 @@ data Type = Minion | Spell | Player
 
 type UserConstraint (k :: (Type -> Constraint)) = (k 'Minion)
 
-data Handle :: Type -> * where
-    MinionHandle :: RawHandle -> Handle 'Minion
-    SpellHandle :: RawHandle -> Handle 'Spell
-    PlayerHandle :: RawHandle -> Handle 'Player
+data Handle :: Type -> (Type -> Constraint) -> * where
+    MinionHandle :: RawHandle -> Handle 'Minion k
+    SpellHandle :: RawHandle -> Handle 'Spell k
+    PlayerHandle :: RawHandle -> Handle 'Player k
 
 
 data Elect :: (Type -> Constraint) -> * where
-    OwnerOf :: (k a) => Handle a -> (Handle 'Player -> Elect k) -> Elect k
+    OwnerOf :: Handle a k -> (Handle 'Player k -> Elect k) -> Elect k
     A :: A k -> Elect k
-    Effect :: Effect k -> Elect k    
+    Effect :: Effect k -> Elect k
 
 data A :: (Type -> Constraint) -> * where
-    Minion' :: [Requirement 'Minion] -> (Handle 'Minion -> Elect k) -> A k
-    Player' :: [Requirement 'Player] -> (Handle 'Player -> Elect k) -> A k
+    Minion' :: [Requirement 'Minion k] -> (Handle 'Minion k -> Elect k) -> A k
+    Player' :: [Requirement 'Player k] -> (Handle 'Player k -> Elect k) -> A k
 
 data Effect :: (Type -> Constraint) -> * where
     Elect :: Elect k -> Effect k
     DoNothing :: Effect k
-    Enchant :: (k a) => Handle a -> Enchantment a k -> Effect k
 
-data Requirement :: Type -> * where
-    OwnedBy :: Handle 'Player -> Requirement 'Minion
-    Damaged :: Requirement 'Minion
+data Requirement :: Type -> (Type -> Constraint) -> * where
+    Damaged :: Requirement 'Minion k
 
-
-data Enchantment :: Type -> (Type -> Constraint) -> * where
-    SwapStats :: Enchantment 'Minion k
 
 data Aura :: (Type -> Constraint) -> * where
-    While :: (k a) => Handle a -> [Requirement a] -> Aura k -> Aura k
-    Has :: Handle 'Minion -> Enchantment 'Minion k -> Aura k
+    While :: (k a) => Handle a k -> [Requirement a k] -> Aura k -> Aura k
+    AuraDone :: Aura k
  
 
 data Ability :: Type -> (Type -> Constraint) -> * where
-    Aura :: (k a) => (Handle a -> Aura k) -> Ability a k
-    Deathrattle :: (k a) => (Handle a -> Elect k) -> Ability a k
+    Aura :: (k a) => (Handle a k -> Aura k) -> Ability a k
 
 data MinionCard (k :: Type -> Constraint) = MinionCard {
     _minionAbilities :: [Ability 'Minion k]
@@ -93,7 +87,7 @@ runShowCard m = evalState (unShowCard m) $ ShowState {
 --------------------------------------------------------------------------------------------------------------------------
 
 class GenHandle (a :: Type) where
-    genHandle :: String -> ShowCard (Handle a)
+    genHandle :: String -> ShowCard (Handle a k)
 
 instance GenHandle 'Minion where
     genHandle = liftM MinionHandle . rawGenHandle
@@ -116,13 +110,13 @@ rawReadHandle = \case
     RawHandle str _ -> return str
 
 
-readHandle :: Handle a -> ShowCard String
+readHandle :: Handle a Showy -> ShowCard String
 readHandle = \case
     MinionHandle raw -> rawReadHandle raw
     PlayerHandle raw -> rawReadHandle raw
     SpellHandle raw -> rawReadHandle raw
 
-genNumberedHandle :: (GenHandle a) => String -> ShowCard (Handle a)
+genNumberedHandle :: (GenHandle a) => String -> ShowCard (Handle a k)
 genNumberedHandle str = do
     n <- gets handleSeed
     genHandle $ str ++ "_" ++ show n
@@ -168,7 +162,7 @@ opponent = "OPPONENT"
 --------------------------------------------------------------------------------------------------------------------------
 
 
-showOwnerOf :: (x -> ShowCard String) -> Handle a -> (Handle 'Player -> x) -> ShowCard String
+showOwnerOf :: (x -> ShowCard String) -> Handle a Showy -> (Handle 'Player Showy -> x) -> ShowCard String
 showOwnerOf showX handle cont = do
     player <- readHandle handle >>= \case
         (is this -> True) -> genHandle you
@@ -176,13 +170,13 @@ showOwnerOf showX handle cont = do
     showX $ cont player
 
 
-showMinion :: [Requirement 'Minion] -> (Handle 'Minion -> Elect Showy) -> ShowCard String
+showMinion :: [Requirement 'Minion Showy] -> (Handle 'Minion Showy -> Elect Showy) -> ShowCard String
 showMinion requirements cont = do
     requirementsStr <- showRequirements requirements
     handle <- genNumberedHandle $ "MINION[" ++ requirementsStr ++ "]"
     showElect $ cont handle
 
-showPlayer :: [Requirement 'Player] -> (Handle 'Player -> Elect Showy) -> ShowCard String
+showPlayer :: [Requirement 'Player Showy] -> (Handle 'Player Showy -> Elect Showy) -> ShowCard String
 showPlayer requirements cont = do
     requirementsStr <- showRequirements requirements
     handle <- genNumberedHandle $ "PLAYER[" ++ requirementsStr ++ "]"
@@ -197,25 +191,18 @@ showAbilities = liftM unlines . mapM showAbility
 showAbility :: (Showy a) => Ability a Showy -> ShowCard String
 showAbility = \case
     Aura aura -> showAuraAbility aura
-    Deathrattle cont -> showDeathrattle cont
 
 
-showAuraAbility :: (Showy a) => (Handle a -> Aura Showy) -> ShowCard String
+showAuraAbility :: (Showy a) => (Handle a Showy -> Aura Showy) -> ShowCard String
 showAuraAbility cont = genHandle this >>= showAura . cont
 
 
-showAura :: Aura Showy -> ShowCard String
+showAura :: (k ~ Showy) => Aura k -> ShowCard String
 showAura = \case
     While handle requirements cont -> showWhile handle requirements cont
-    Has handle enchantment -> showHas handle enchantment
+    AuraDone -> return "AuraDone"
 
-showHas :: (Showy a) => Handle a -> Enchantment a Showy -> ShowCard String
-showHas handle enchantment = do
-    handleStr <- readHandle handle
-    enchantmentStr <- showEnchantment enchantment
-    return $ unwords [handleStr, "has", enchantmentStr]
-
-showWhile :: (Showy a) => Handle a -> [Requirement a] -> Aura Showy -> ShowCard String
+showWhile :: (Showy a, k ~ Showy) => Handle a k -> [Requirement a k] -> Aura k -> ShowCard String
 showWhile handle requirements aura = case requirements of
     [] -> showAura aura
     _ -> do
@@ -225,45 +212,25 @@ showWhile handle requirements aura = case requirements of
         return $ "While " ++ handleStr ++ "[" ++ requirementsStr ++ "]: " ++ auraStr
 
 
-showRequirements :: [Requirement a] -> ShowCard String
+showRequirements :: [Requirement a k] -> ShowCard String
 showRequirements = liftM (intercalate "," . filter (not . null)) . showRequirements'
 
 
-showRequirements' :: [Requirement a] -> ShowCard [String]
+showRequirements' :: [Requirement a k] -> ShowCard [String]
 showRequirements' = \case
     [] -> return []
     r : rs -> showRequirement r >>= \s -> liftM (s :) $ showRequirements' rs
 
 
-showRequirement :: Requirement a -> ShowCard String
+showRequirement :: Requirement a k -> ShowCard String
 showRequirement = \case
     Damaged -> return "DAMAGED"
-    OwnedBy handle -> readHandle handle >>= return . \case
-        (is you -> True) -> "FRIENDLY"
-        (is opponent -> True) -> "ENEMY"
-        str -> "OWNED_BY[" ++ str ++ "]"
-
-showEnchant :: (Showy a) => Handle a -> Enchantment a Showy -> ShowCard String
-showEnchant minion enchantment = do
-    minionStr <- readHandle minion
-    enchantmentStr <- showEnchantment enchantment
-    return $ unwords ["Give", minionStr, enchantmentStr]
-
-showEnchantment :: (Showy a) => Enchantment a Showy -> ShowCard String
-showEnchantment = \case
-    SwapStats -> return "Swapped attack and health"
-
-showDeathrattle :: (Showy a) => (Handle a -> Elect Showy) -> ShowCard String
-showDeathrattle cont = do
-    effectStr <- genHandle this >>= showElect . cont
-    return $ "Deathrattle: " ++ effectStr
 
 
 showEffect :: Effect Showy -> ShowCard String
 showEffect = \case
     Elect elect -> showElect elect
     DoNothing -> return "DoNothing"
-    Enchant handle enchantments -> showEnchant handle enchantments
 
 
 showElect :: Elect Showy -> ShowCard String
